@@ -11,6 +11,7 @@ import {
   Menu,
   X,
   RefreshCcw,
+  CarFront,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -55,7 +56,7 @@ const AdminLayout = ({ children }) => {
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
           <div className="flex items-center gap-2">
             <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center shadow-sm">
-              <img src="https://www.rsr-tours.com/static/media/logoRSR.520d3b5c1fbc05c845d5.jpg" alt="srs tours and travels" className="w-full rounded-xl" />
+           <CarFront className='text-white'/>
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-900">RSR Admin</p>
