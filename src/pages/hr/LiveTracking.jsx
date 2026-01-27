@@ -565,7 +565,7 @@ const geocode = useCallback(
                           'N/A'}
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        Vehicle: {selectedTrip.assignedVehicle?.brand}{' '}
+                        Vehicle:{' '}
                         {selectedTrip.assignedVehicle?.model} ·{' '}
                         {selectedTrip.assignedVehicle?.vehicleNumber}
                       </p>

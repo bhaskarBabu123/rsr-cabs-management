@@ -370,7 +370,7 @@ const EmployeeTrips = () => {
                       <Car className="w-3.5 h-3.5 flex-shrink-0" />
                       <div className="min-w-0">
                         <p className="font-medium text-slate-900 truncate">{selectedTrip.assignedVehicle?.vehicleNumber || 'Vehicle'}</p>
-                        <p className="text-slate-600">{selectedTrip.assignedVehicle?.brand} {selectedTrip.assignedVehicle?.model}</p>
+                        <p className="text-slate-600"> {selectedTrip.assignedVehicle?.model}</p>
                       </div>
                     </div>
                   </div>

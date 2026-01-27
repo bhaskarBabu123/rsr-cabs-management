@@ -190,7 +190,7 @@ const DriverProfile = () => {
                     {vehicle.vehicleNumber}
                   </p>
                   <p className="text-[11px] text-gray-500">
-                    {vehicle.brand} {vehicle.model} • {vehicle.year}
+                    {vehicle.model} • {vehicle.year}
                   </p>
                   <p className="text-[11px] text-gray-500">
                     Capacity: {vehicle.capacity} passengers

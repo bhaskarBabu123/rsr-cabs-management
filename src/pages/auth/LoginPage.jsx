@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Car, CarFront, Eye, EyeOff, Loader2, MapPin, RefreshCcw } from 'lucide-react';
+import { Car, Eye, EyeOff, Loader2, MapPin, RefreshCcw } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -55,7 +55,7 @@ const LoginPage = () => {
         <div className="flex flex-col items-center text-center space-y-2">
           <div className="relative">
             <div className="w-16 h-16 sm:w-18 sm:h-18 rounded-3xl bg-white shadow-md flex items-center justify-center border border-blue-100">
-             <CarFront/>
+              <img src="https://www.rsr-tours.com/static/media/logoRSR.520d3b5c1fbc05c845d5.jpg" alt="rsr cabs" className="w-full rounded-xl" />
             </div>
           </div>
           <div>
