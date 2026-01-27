@@ -19,7 +19,7 @@ export const SocketProvider = ({ children }) => {
 
   useEffect(() => {
     if (isAuthenticated && user) {
-      const newSocket = io('http://localhost:5000', {
+      const newSocket = io('https://stall-bookings-backend.onrender.com', {
         auth: {
           token: localStorage.getItem('accessToken'),
           userId: user._id,
