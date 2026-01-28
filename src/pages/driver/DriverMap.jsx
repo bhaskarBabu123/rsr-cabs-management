@@ -17,8 +17,8 @@ import {
   Info,
   X,
   ArrowUp,
-  TurnRight,
-  TurnLeft
+  ArrowRight,
+  ArrowLeft
 } from 'lucide-react';
 import DriverLayout from '../../components/layouts/DriverLayout';
 import LoadingSpinner from '../../components/LoadingSpinner';
@@ -234,8 +234,8 @@ const DriverMap = () => {
   const getManeuverIcon = (instruction) => {
     if (!instruction) return ArrowUp;
     const lower = instruction.toLowerCase();
-    if (lower.includes('right')) return TurnRight;
-    if (lower.includes('left')) return TurnLeft;
+    if (lower.includes('right')) return ArrowRight;
+    if (lower.includes('left')) return   ArrowLeft;
     return ArrowUp;
   };
 

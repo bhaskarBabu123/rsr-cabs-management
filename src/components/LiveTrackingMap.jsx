@@ -1,550 +1,402 @@
-// src/components/LiveTrackingMap.jsx - CONTINUOUS BEATING CIRCLE ANIMATION + REAL ROUTE
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { GoogleMap, Marker, Polyline, Circle, InfoWindow } from '@react-google-maps/api';
-import { Navigation, ArrowLeft, MapPin, Activity, Car, Phone, Users } from 'lucide-react';
+// src/components/LiveTrackingMap.jsx
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { GoogleMap, Marker, DirectionsRenderer, Polyline, InfoWindow, Circle } from '@react-google-maps/api';
+import { X, Navigation, Phone, MapPin, Clock, User, Home, Building2 } from 'lucide-react';
+
+const mapContainerStyle = {
+  width: '100%',
+  height: '100%'
+};
+
+const mapStyles = [
+  {
+    featureType: 'poi',
+    elementType: 'labels.text',
+    stylers: [{ visibility: 'on' }]
+  },
+  {
+    featureType: 'poi.business',
+    stylers: [{ visibility: 'simplified' }]
+  },
+  {
+    featureType: 'transit',
+    elementType: 'labels',
+    stylers: [{ visibility: 'on' }]
+  },
+  {
+    featureType: 'road',
+    elementType: 'labels',
+    stylers: [{ visibility: 'on' }]
+  }
+];
 
 const LiveTrackingMap = ({ trip, currentLocation, locationHistory = [], onClose }) => {
   const [map, setMap] = useState(null);
-  const [center, setCenter] = useState({ lat: 12.9716, lng: 77.5946 });
-  const [pulseAnimation, setPulseAnimation] = useState(false);
-  const [pulsePhase, setPulsePhase] = useState(0);
-  const [tracePath, setTracePath] = useState([]);
-  const [stats, setStats] = useState({
-    eta: '--', distance: '--', speed: 0, accuracy: 25, direction: 'N',
-    lastUpdate: '--', totalDistance: 0
-  });
-  const [addresses, setAddresses] = useState({ 
-    current: 'Resolving location...', 
-    pickup: 'Resolving...', 
-    drop: 'Resolving...', 
-    office: 'Resolving...' 
-  });
-  const [toastMessage, setToastMessage] = useState(null);
-  const [showCurrentInfo, setShowCurrentInfo] = useState(false);
-  const [screenSize, setScreenSize] = useState({ width: 0, height: 0 });
-  const [routePath, setRoutePath] = useState([]);
-  const rafRef = useRef(null);
+  const [directionsResponse, setDirectionsResponse] = useState(null);
+  const [selectedMarker, setSelectedMarker] = useState(null);
+  const [bearing, setBearing] = useState(0);
+  const mapRef = useRef(null);
 
-  // RESPONSIVE SCREEN DETECTION
+  // Calculate bearing from location history
   useEffect(() => {
-    const updateSize = () => {
-      setScreenSize({
-        width: window.innerWidth,
-        height: window.innerHeight
-      });
-    };
-    updateSize();
-    window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
-  }, []);
-
-  // CONTINUOUS BEATING CIRCLE ANIMATION - REPEATS FOREVER
-  useEffect(() => {
-    if (pulseAnimation) {
-      let startTime = performance.now();
+    if (locationHistory.length >= 2) {
+      const recent = locationHistory[0].location.coordinates;
+      const prev = locationHistory[1].location.coordinates;
       
-      const animatePulse = (currentTime) => {
-        const elapsed = currentTime - startTime;
-        const progress = (elapsed / 2000) % 1; // 2s cycle, loops forever
-        
-        // Smooth beating: 0→1→0.4→0 (heartbeat effect)
-        const phase = progress < 0.6 
-          ? progress * 1.67  // Grow phase
-          : 1 - (progress - 0.6) * 2.5; // Shrink phase
-        
-        setPulsePhase(phase);
-        rafRef.current = requestAnimationFrame(animatePulse);
-      };
-      
-      rafRef.current = requestAnimationFrame(animatePulse);
-      
-      return () => {
-        if (rafRef.current) {
-          cancelAnimationFrame(rafRef.current);
-        }
-      };
-    } else {
-      setPulsePhase(0);
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
+      const startLat = (prev.lat * Math.PI) / 180;
+      const startLng = (prev.lng * Math.PI) / 180;
+      const endLat = (recent.lat * Math.PI) / 180;
+      const endLng = (recent.lng * Math.PI) / 180;
+
+      const dLng = endLng - startLng;
+      const y = Math.sin(dLng) * Math.cos(endLat);
+      const x = Math.cos(startLat) * Math.sin(endLat) - Math.sin(startLat) * Math.cos(endLat) * Math.cos(dLng);
+      const bearingCalc = (Math.atan2(y, x) * 180) / Math.PI;
+
+      setBearing((bearingCalc + 360) % 360);
     }
-  }, [pulseAnimation]);
+  }, [locationHistory]);
 
-  // GEOCODE FUNCTION
-  const geocode = useCallback(async (lat, lng, key) => {
-    const cacheKey = `addr_${lat.toFixed(6)}_${lng.toFixed(6)}`;
-    const cached = sessionStorage.getItem(cacheKey);
-    if (cached && cached.length > 20 && !cached.includes('+')) {
-      setAddresses((prev) => ({ ...prev, [key]: cached }));
-      return cached;
-    }
-
-    const coords = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    setAddresses((prev) => ({ ...prev, [key]: coords }));
-
-    try {
-      const geocoder = new window.google.maps.Geocoder();
-      const response = await new Promise((resolve, reject) => {
-        geocoder.geocode(
-          { location: { lat, lng }, region: 'IN', language: 'en' },
-          (results, status) => status === 'OK' ? resolve(results) : reject(status)
-        );
-      });
-
-      const bestAddress = response
-        ?.map(r => r.formatted_address)
-        ?.filter(a => a && !a.includes('+'))
-        ?.sort((a, b) => b.length - a.length)[0] || coords;
-
-      setAddresses((prev) => ({ ...prev, [key]: bestAddress }));
-      sessionStorage.setItem(cacheKey, bestAddress);
-
-      if (key === 'current') {
-        setToastMessage(bestAddress);
-        setTimeout(() => setToastMessage(null), 3500);
-      }
-
-      return bestAddress;
-    } catch (err) {
-      console.warn('Geocode failed:', err);
-      return coords;
-    }
-  }, []);
-
-  // MAIN LIVE UPDATE EFFECT
+  // Calculate route
   useEffect(() => {
-    if (currentLocation?.location?.coordinates) {
-      const coords = currentLocation.location.coordinates;
-      setCenter(coords);
-      setPulseAnimation(true);
-      setShowCurrentInfo(true);
-      
-      // Update trace path
-      const newPath = [{ lat: coords.lat, lng: coords.lng }];
-      if (tracePath.length > 0) {
-        newPath.push(...tracePath.slice(0, 48));
-      }
-      setTracePath(newPath);
+    if (!currentLocation || !trip || !window.google || !trip.employees?.length) return;
 
-      geocode(coords.lat, coords.lng, 'current');
-
-      const speed = Math.round(currentLocation.speed || 0);
-      const accuracy = Math.round(currentLocation.location?.accuracy || 25);
-      const bearing = currentLocation.location?.bearing || 0;
-      const directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-      const direction = directions[Math.max(0, Math.min(7, Math.round(bearing / 45)))];
-
-      // Compute next stop
-      const nextStop = trip?.myEntry?.pickupLocation?.coordinates || 
-          (trip?.tripType === 'login' ? trip?.officeLocation?.coordinates : trip?.myEntry?.dropLocation?.coordinates);
-
-      let distance = '--', eta = '--';
-      if (nextStop) {
-        const distKm = (getDistance(coords.lat, coords.lng, nextStop.lat, nextStop.lng) / 1000).toFixed(1);
-        const etaMin = speed > 0 ? Math.max(1, Math.round((distKm * 60) / speed)) : 0;
-        distance = `${distKm}km`;
-        eta = etaMin <= 2 ? 'Soon' : `${etaMin}min`;
-      }
-
-      let totalDist = 0;
-      if (newPath.length > 1) {
-        for (let i = 1; i < newPath.length; i++) {
-          totalDist += getDistance(newPath[i-1].lat, newPath[i-1].lng, newPath[i].lat, newPath[i].lng);
-        }
-      }
-
-      setStats({
-        eta, distance, speed, accuracy, direction,
-        lastUpdate: new Date().toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}),
-        totalDistance: (totalDist / 1000).toFixed(1)
-      });
-
-      if (map) {
-        map.panTo(coords);
-        map.setZoom(16);
-      }
-
-      // Get route from Directions API
-      if (nextStop) {
-        getRoute(coords, nextStop);
-      }
-    }
-  }, [currentLocation, trip, map, geocode, tracePath]);
-
-  // STATIC LOCATIONS
-  useEffect(() => {
-    if (trip?.myEntry?.pickupLocation?.coordinates) {
-      geocode(trip.myEntry.pickupLocation.coordinates.lat, trip.myEntry.pickupLocation.coordinates.lng, 'pickup');
-    }
-    if (trip?.myEntry?.dropLocation?.coordinates) {
-      geocode(trip.myEntry.dropLocation.coordinates.lat, trip.myEntry.dropLocation.coordinates.lng, 'drop');
-    }
-    if (trip?.tripType === 'login' && trip?.officeLocation?.coordinates) {
-      geocode(trip.officeLocation.coordinates.lat, trip.officeLocation.coordinates.lng, 'office');
-    }
-  }, [trip, geocode]);
-
-  // CLEANUP ON UNMOUNT
-  useEffect(() => {
-    return () => {
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current);
-      }
-    };
-  }, []);
-
-  const getDistance = (lat1, lng1, lat2, lng2) => {
-    const R = 6371e3; 
-    const φ1 = lat1 * Math.PI/180; 
-    const φ2 = lat2 * Math.PI/180;
-    const Δφ = (lat2-lat1) * Math.PI/180; 
-    const Δλ = (lng2-lng1) * Math.PI/180;
-    const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2) * Math.sin(Δλ/2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    return R * c;
-  };
-
-  const panToCurrent = useCallback(() => {
-    if (map && currentLocation?.location?.coordinates) {
-      map.panTo(currentLocation.location.coordinates);
-      map.setZoom(16);
-    }
-  }, [map, currentLocation]);
-
-  const getRoute = (origin, destination) => {
     const directionsService = new window.google.maps.DirectionsService();
-    directionsService.route(
-      {
-        origin: { lat: origin.lat, lng: origin.lng },
-        destination: { lat: destination.lat, lng: destination.lng },
-        travelMode: window.google.maps.TravelMode.DRIVING,
-      },
-      (response, status) => {
-        if (status === window.google.maps.DirectionsStatus.OK) {
-          const path = response.routes[0].overview_path.map(p => ({
-            lat: p.lat(),
-            lng: p.lng()
-          }));
-          setRoutePath(path);
-        } else {
-          console.error('Directions request failed due to ' + status);
+    const currentPos = currentLocation.location?.coordinates || currentLocation;
+
+    // Get pending pickups and drops
+    const pendingStops = [];
+    
+    if (trip.tripType === 'login') {
+      trip.employees.forEach(emp => {
+        if (emp.status !== 'picked_up' && emp.status !== 'dropped' && emp.pickupLocation?.coordinates) {
+          pendingStops.push({
+            location: emp.pickupLocation.coordinates,
+            type: 'pickup',
+            employee: emp
+          });
         }
+      });
+      if (trip.officeLocation?.coordinates) {
+        pendingStops.push({
+          location: trip.officeLocation.coordinates,
+          type: 'office',
+          label: 'Office'
+        });
       }
-    );
-  };
-
-  const getNextStopAddress = () => {
-    if (trip?.tripType === 'login') return addresses.office;
-    if (trip?.myEntry?.pickupLocation?.coordinates) return addresses.pickup;
-    if (trip?.myEntry?.dropLocation?.coordinates) return addresses.drop;
-    return 'Destination';
-  };
-
-  const getToastPosition = () => {
-    if (screenSize.width < 640) {
-      return {
-        bottom: '1rem',
-        left: '1rem',
-        right: '1rem',
-        transform: 'none'
-      };
+    } else {
+      if (trip.officeLocation?.coordinates) {
+        pendingStops.push({
+          location: trip.officeLocation.coordinates,
+          type: 'office',
+          label: 'Office'
+        });
+      }
+      trip.employees.forEach(emp => {
+        if (emp.status !== 'dropped' && emp.dropLocation?.coordinates) {
+          pendingStops.push({
+            location: emp.dropLocation.coordinates,
+            type: 'drop',
+            employee: emp
+          });
+        }
+      });
     }
-    return {
-      bottom: '1rem',
-      left: '50%',
-      transform: 'translateX(-50%)'
+
+    if (pendingStops.length === 0) return;
+
+    const destination = pendingStops[pendingStops.length - 1].location;
+    const waypoints = pendingStops.slice(0, -1).map(stop => ({
+      location: stop.location,
+      stopover: true
+    }));
+
+    const request = {
+      origin: currentPos,
+      destination: destination,
+      waypoints: waypoints.length > 0 ? waypoints : undefined,
+      travelMode: window.google.maps.TravelMode.DRIVING,
+      drivingOptions: {
+        departureTime: new Date(),
+        trafficModel: 'bestguess'
+      }
     };
+
+    directionsService.route(request, (result, status) => {
+      if (status === 'OK') {
+        setDirectionsResponse(result);
+      }
+    });
+  }, [currentLocation, trip]);
+
+  const onMapLoad = useCallback((mapInstance) => {
+    setMap(mapInstance);
+    mapRef.current = mapInstance;
+  }, []);
+
+  // Get all stops for markers
+  const getAllStops = () => {
+    if (!trip) return [];
+    const stops = [];
+
+    if (trip.tripType === 'login') {
+      trip.employees?.forEach((emp, idx) => {
+        if (emp.pickupLocation?.coordinates) {
+          stops.push({
+            position: emp.pickupLocation.coordinates,
+            type: 'pickup',
+            employee: emp,
+            label: `P${idx + 1}`,
+            completed: emp.status === 'picked_up' || emp.status === 'dropped'
+          });
+        }
+      });
+      if (trip.officeLocation?.coordinates) {
+        stops.push({
+          position: trip.officeLocation.coordinates,
+          type: 'office',
+          label: 'Office',
+          completed: false
+        });
+      }
+    } else {
+      if (trip.officeLocation?.coordinates) {
+        stops.push({
+          position: trip.officeLocation.coordinates,
+          type: 'office',
+          label: 'Office',
+          completed: false
+        });
+      }
+      trip.employees?.forEach((emp, idx) => {
+        if (emp.dropLocation?.coordinates) {
+          stops.push({
+            position: emp.dropLocation.coordinates,
+            type: 'drop',
+            employee: emp,
+            label: `D${idx + 1}`,
+            completed: emp.status === 'dropped'
+          });
+        }
+      });
+    }
+
+    return stops;
   };
 
-  const toastPos = getToastPosition();
+  const stops = getAllStops();
+  const center = currentLocation?.location?.coordinates || currentLocation || { lat: 12.9716, lng: 77.5946 };
 
   return (
-    <div className="w-full h-full flex flex-col relative overflow-hidden bg-white">
-      {/* RESPONSIVE MAP */}
-      <div className={`relative ${screenSize.width < 640 ? 'h-[50vh]' : 'h-[55vh]'}`}>
-        <GoogleMap
-          mapContainerStyle={{ width: '100%', height: '100%' }}
-          center={center}
-          zoom={16}
-          onLoad={setMap}
-          options={{
-            disableDefaultUI: true,
-            zoomControl: false,
-            streetViewControl: false,
-            fullscreenControl: false,
-            gestureHandling: 'greedy',
-            styles: [
-              { featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-              { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] }
-            ]
-          }}
-        >
-          {/* Trace Path */}
-          {tracePath.length > 1 && (
-            <Polyline 
-              path={tracePath} 
-              options={{ strokeColor: '#10B981', strokeOpacity: 0.8, strokeWeight: 5, geodesic: true }} 
-            />
-          )}
+    <div className="relative w-full h-full">
+      <GoogleMap
+        mapContainerStyle={mapContainerStyle}
+        center={center}
+        zoom={14}
+        onLoad={onMapLoad}
+        options={{
+          disableDefaultUI: true,
+          zoomControl: true,
+          styles: mapStyles,
+          gestureHandling: 'greedy'
+        }}
+      >
+        {/* Route */}
+        {directionsResponse && (
+          <DirectionsRenderer
+            directions={directionsResponse}
+            options={{
+              suppressMarkers: true,
+              polylineOptions: {
+                strokeColor: '#5B8DEF',
+                strokeWeight: 5,
+                strokeOpacity: 0.8
+              }
+            }}
+          />
+        )}
 
-          {/* Route Path */}
-          {routePath.length > 1 && (
-            <Polyline
-              path={routePath}
+        {/* Location trail */}
+        {locationHistory.length > 1 && (
+          <Polyline
+            path={locationHistory.map(loc => loc.location.coordinates)}
+            options={{
+              strokeColor: '#93C5FD',
+              strokeWeight: 4,
+              strokeOpacity: 0.5,
+              geodesic: true
+            }}
+          />
+        )}
+
+        {/* Current location - circular car marker */}
+        {currentLocation && (
+          <>
+            <Circle
+              center={center}
+              radius={(currentLocation.location?.accuracy || 20)}
               options={{
-                strokeColor: '#2563eb', // blue
-                strokeOpacity: 0.9,
-                strokeWeight: 4,
-                icons: [
-                  {
-                    icon: {
-                      path: window.google.maps.SymbolPath.FORWARD_CLOSED_ARROW,
-                      scale: 3,
-                      strokeColor: '#2563eb',
-                    },
-                    offset: '50%',
-                  },
-                ],
+                fillColor: '#4F46E5',
+                fillOpacity: 0.1,
+                strokeColor: '#4F46E5',
+                strokeOpacity: 0.3,
+                strokeWeight: 1
               }}
             />
-          )}
+            
+            <Marker
+              position={center}
+              icon={{
+                url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                  <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+                        <feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.3"/>
+                      </filter>
+                    </defs>
+                    <circle cx="24" cy="24" r="20" fill="white" filter="url(#shadow)"/>
+                    <circle cx="24" cy="24" r="18" fill="#10B981"/>
+                    <g transform="rotate(${bearing} 24 24)">
+                      <path d="M24 10 L27 20 L24 18 L21 20 Z" fill="white"/>
+                    </g>
+                    <circle cx="24" cy="24" r="4" fill="white"/>
+                  </svg>
+                `),
+                scaledSize: new window.google.maps.Size(48, 48),
+                anchor: new window.google.maps.Point(24, 24)
+              }}
+              zIndex={1000}
+            />
+          </>
+        )}
 
-          {/* CURRENT LOCATION */}
-          {currentLocation?.location?.coordinates && (
-            <>
-              <Marker
-                position={currentLocation.location.coordinates}
-                icon={{
-                  url: 'https://maps.google.com/mapfiles/kml/shapes/truck_red.png',
-                  scaledSize: new window.google.maps.Size(44, 44),
-                  anchor: new window.google.maps.Point(22, 22)
-                }}
-                animation={pulseAnimation ? 1 : 2}
-              />
-
-              {/* GPS Accuracy Circle - Continuous Pulse */}
-              <Circle
-                center={currentLocation.location.coordinates}
-                radius={stats.accuracy}
-                options={{
-                  strokeColor: '#10B981',
-                  strokeOpacity: pulsePhase * 0.9,
-                  strokeWeight: 3,
-                  fillColor: '#10B981',
-                  fillOpacity: pulsePhase * 0.25,
-                  clickable: false
-                }}
-              />
-
-              {/* CONTINUOUS BEATING PULSE CIRCLE - 2s INFINITE LOOP */}
-              <Circle
-                center={currentLocation.location.coordinates}
-                radius={pulsePhase * 300} // 0-300m smooth expansion
-                options={{
-                  strokeColor: '#10B981',
-                  strokeOpacity: Math.max(0.3, pulsePhase * 0.95),
-                  strokeWeight: 2.5,
-                  fillColor: '#10B981',
-                  fillOpacity: Math.max(0, pulsePhase * 0.2),
-                  clickable: false,
-                  zIndex: 1000
-                }}
-              />
-
-              {/* Speed Ring */}
-              <Circle
-                center={currentLocation.location.coordinates}
-                radius={stats.speed * 2.5}
-                options={{
-                  strokeColor: stats.speed > 40 ? '#EF4444' : '#10B981',
-                  strokeOpacity: 0.5,
-                  strokeWeight: 2,
-                  fillOpacity: 0,
-                  clickable: false
-                }}
-              />
-
-              {/* Info Window */}
-              {showCurrentInfo && (
-                <InfoWindow
-                  position={currentLocation.location.coordinates}
-                  onCloseClick={() => setShowCurrentInfo(false)}
-                  options={{ 
-                    pixelOffset: new window.google.maps.Size(0, -40),
-                    zIndex: 999 
-                  }}
-                >
-                  <div className="p-2 bg-white rounded-lg shadow-lg border min-w-[160px]">
-                    <div className="flex items-center gap-1 mb-1">
-                      <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                      <span className="font-bold text-xs text-slate-900">LIVE</span>
-                    </div>
-                    <div className="text-xs text-slate-700 truncate">{addresses.current}</div>
-                    <div className="text-xs text-slate-600 flex gap-1">
-                      <span>{stats.speed}</span><span>km/h</span>
+        {/* Stop markers */}
+        {stops.map((stop, idx) => (
+          <Marker
+            key={idx}
+            position={stop.position}
+            onClick={() => setSelectedMarker(idx)}
+            icon={{
+              url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                <svg width="32" height="40" viewBox="0 0 32 40" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M16 0C7.2 0 0 7.2 0 16c0 12 16 24 16 24s16-12 16-24c0-8.8-7.2-16-16-16z" 
+                    fill="${stop.completed ? '#10B981' : '#EF4444'}"/>
+                  <circle cx="16" cy="16" r="10" fill="white"/>
+                  <text x="16" y="21" font-size="12" font-weight="bold" text-anchor="middle" fill="${stop.completed ? '#10B981' : '#EF4444'}">
+                    ${stop.type === 'pickup' ? 'P' : stop.type === 'drop' ? 'D' : 'O'}
+                  </text>
+                </svg>
+              `),
+              scaledSize: new window.google.maps.Size(32, 40),
+              anchor: new window.google.maps.Point(16, 40)
+            }}
+            zIndex={stop.completed ? 50 : 100}
+          >
+            {selectedMarker === idx && (
+              <InfoWindow onCloseClick={() => setSelectedMarker(null)}>
+                <div className="p-2 max-w-xs">
+                  <div className="flex items-start gap-2 mb-2">
+                    <span className="text-base">
+                      {stop.type === 'pickup' ? '📍' : stop.type === 'drop' ? '🏠' : '🏢'}
+                    </span>
+                    <div>
+                      <p className="text-xs font-bold text-gray-900 mb-1">
+                        {stop.employee?.employee?.user?.name || stop.label || 'Stop'}
+                      </p>
+                      <p className="text-xs text-gray-600 leading-tight">
+                        {stop.type === 'pickup' 
+                          ? stop.employee?.pickupLocation?.address 
+                          : stop.type === 'drop' 
+                          ? stop.employee?.dropLocation?.address 
+                          : trip?.officeLocation?.address}
+                      </p>
+                      {stop.employee && (
+                        <div className="mt-2">
+                          <span className={`text-xs px-2 py-1 rounded-full ${
+                            stop.completed 
+                              ? 'bg-green-100 text-green-800' 
+                              : 'bg-red-100 text-red-800'
+                          }`}>
+                            {stop.employee.status?.replace('_', ' ').toUpperCase() || 'PENDING'}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
-                </InfoWindow>
-              )}
-            </>
-          )}
+                  {stop.employee?.employee?.user?.phone && (
+                    <button
+                      onClick={() => window.location.href = `tel:${stop.employee.employee.user.phone}`}
+                      className="w-full text-xs py-1 px-2 bg-blue-600 text-white rounded-md flex items-center justify-center gap-1"
+                    >
+                      <Phone className="w-3 h-3" />
+                      Call
+                    </button>
+                  )}
+                </div>
+              </InfoWindow>
+            )}
+          </Marker>
+        ))}
+      </GoogleMap>
 
-          {/* Other Markers */}
-          {trip?.myEntry?.pickupLocation?.coordinates && (
-            <Marker position={trip.myEntry.pickupLocation.coordinates} 
-              icon={{ url: 'https://maps.google.com/mapfiles/ms/icons/green-dot.png', scaledSize: new window.google.maps.Size(36, 36) }} />
-          )}
-          {trip?.tripType === 'login' && trip?.officeLocation?.coordinates && (
-            <Marker position={trip.officeLocation.coordinates} 
-              icon={{ url: 'https://maps.google.com/mapfiles/ms/icons/yellow-dot.png', scaledSize: new window.google.maps.Size(36, 36) }} />
-          )}
-          {trip?.myEntry?.dropLocation?.coordinates && trip?.tripType !== 'login' && (
-            <Marker position={trip.myEntry.dropLocation.coordinates} 
-              icon={{ url: 'https://maps.google.com/mapfiles/ms/icons/red-dot.png', scaledSize: new window.google.maps.Size(36, 36) }} />
-          )}
-        </GoogleMap>
-
-        {/* Pan Button */}
-        <button 
-          onClick={panToCurrent}
-          className={`absolute top-2 left-2 z-[100] w-11 h-11 rounded-xl flex items-center justify-center border-2 bg-white/95 backdrop-blur-sm shadow-lg transition-all ${
-            pulseAnimation 
-              ? 'border-emerald-400 bg-emerald-50 animate-pulse' 
-              : 'border-slate-200 hover:border-slate-300 hover:shadow-xl'
-          }`}
+      {/* Close button */}
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="absolute top-3 right-3 w-10 h-10 bg-white rounded-full shadow-lg flex items-center justify-center hover:bg-gray-50 z-10"
         >
-          <Navigation className="w-5 h-5 text-slate-700" />
+          <X className="w-5 h-5 text-gray-700" />
         </button>
+      )}
 
-        {/* Toast */}
-        {toastMessage && (
-          <div 
-            className="z-[200] bg-white/98 backdrop-blur-md px-3 py-1.5 rounded-full shadow-2xl border border-emerald-200 text-xs flex items-center gap-1.5 text-emerald-800 font-medium leading-tight animate-pulse"
-            style={{
-              position: 'absolute',
-              ...toastPos,
-              maxWidth: screenSize.width < 640 ? 'calc(100% - 2rem)' : '280px'
-            }}
-          >
-            <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
-            <span className="truncate">{toastMessage}</span>
+      {/* Compact info overlay */}
+      <div className="absolute bottom-3 left-3 right-3 bg-white rounded-xl shadow-xl p-3 z-10">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <p className="text-xs font-bold text-gray-900">{trip?.tripName}</p>
+            <p className="text-xs text-gray-600">{trip?.routeName}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-xs font-semibold text-green-600">LIVE</span>
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <div className="text-center py-1 bg-gray-50 rounded-lg">
+            <p className="font-bold text-gray-900">{trip?.employees?.length || 0}</p>
+            <p className="text-gray-600">Total</p>
+          </div>
+          <div className="text-center py-1 bg-blue-50 rounded-lg">
+            <p className="font-bold text-blue-900">
+              {trip?.employees?.filter(e => e.status === 'picked_up').length || 0}
+            </p>
+            <p className="text-blue-600">Picked</p>
+          </div>
+          <div className="text-center py-1 bg-green-50 rounded-lg">
+            <p className="font-bold text-green-900">
+              {trip?.employees?.filter(e => e.status === 'dropped').length || 0}
+            </p>
+            <p className="text-green-600">Dropped</p>
+          </div>
+        </div>
+
+        {currentLocation && (
+          <div className="mt-2 pt-2 border-t border-gray-200 flex items-center justify-between text-xs">
+            <span className="text-gray-600">Speed:</span>
+            <span className="font-semibold text-gray-900">
+              {Math.round((currentLocation.location?.speed || currentLocation.speed || 0) * 3.6)} km/h
+            </span>
+            <span className="text-gray-600">•</span>
+            <span className="text-gray-600">
+              {new Date(currentLocation.timestamp).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit'
+              })}
+            </span>
           </div>
         )}
       </div>
-
-      {/* Bottom Panel - Unchanged */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-slate-50 border-t border-slate-200">
-        {/* All bottom panel content same as before */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <MapPin className="w-5 h-5 text-emerald-500" />
-            <h3 className="text-sm font-semibold text-slate-900">Driver Location</h3>
-          </div>
-          <div className={`text-[13px] font-medium text-slate-800 mb-2 max-h-12 overflow-y-auto leading-tight transition-opacity duration-500 ${
-            addresses.current.includes('Resolving') ? 'animate-pulse opacity-70' : 'opacity-100'
-          }`}>
-            {addresses.current}
-          </div>
-          <div className="flex items-center justify-between text-[11px] text-slate-500">
-            <span>GPS: {stats.accuracy}m • {stats.direction}</span>
-            <span>{stats.lastUpdate}</span>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-3">
-          <div className="flex items-start gap-3 mb-1">
-            <div className="w-10 h-10 bg-emerald-500 rounded-lg flex items-center justify-center flex-shrink-0">
-              <Car className="w-5 h-5 text-white" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="font-semibold text-sm text-slate-900 mb-1 truncate">{trip?.assignedDriver?.driverId || 'Driver'}</p>
-              <p className="text-[12px] text-slate-600">{trip?.assignedVehicle?.brand || ''} {trip?.assignedVehicle?.model || ''}</p>
-              <p className="text-[12px] font-medium text-slate-800 mt-0.5">{trip?.assignedVehicle?.vehicleNumber || 'Vehicle'}</p>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2">
-          <div className="bg-white border border-slate-200 rounded-xl p-3 text-center">
-            <div className="text-xl font-bold text-slate-900">{stats.speed}</div>
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider">Speed</div>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-3 text-center">
-            <div className="text-lg font-bold text-slate-900">{stats.eta}</div>
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider">ETA</div>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-3 text-center">
-            <div className="text-sm font-bold text-slate-900">{stats.distance}</div>
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider">Distance</div>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-3 text-center">
-            <div className="text-sm font-bold text-slate-900">{stats.totalDistance}km</div>
-            <div className="text-[11px] text-slate-500 uppercase tracking-wider">Travelled</div>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-3 space-y-2">
-          <div className="flex items-center gap-2 text-[12px] font-medium text-slate-900 mb-2">
-            <Activity className="w-4 h-4 text-emerald-500" />Route Details
-          </div>
-          {trip?.myEntry?.pickupLocation?.coordinates && (
-            <div className="flex items-start gap-2 p-2 bg-slate-50 rounded-lg">
-              <div className="w-2 h-2 bg-green-500 rounded-full mt-1.5 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-[12px] text-slate-900 mb-0.5">Pickup</div>
-                <div className="text-[11px] text-slate-600 max-h-8 overflow-hidden leading-tight">{addresses.pickup}</div>
-              </div>
-            </div>
-          )}
-          <div className="flex items-start gap-2 p-2 bg-emerald-50 rounded-lg border border-emerald-200">
-            <div className="w-2 h-2 bg-emerald-500 rounded-full mt-1.5 flex-shrink-0 animate-pulse" />
-            <div className="flex-1 min-w-0">
-              <div className="font-semibold text-[12px] text-emerald-800 mb-0.5">Next Stop ({stats.distance})</div>
-              <div className="text-[11px] text-emerald-700 max-h-8 overflow-hidden leading-tight">{getNextStopAddress()}</div>
-            </div>
-          </div>
-          {(trip?.myEntry?.dropLocation?.coordinates || (trip?.tripType === 'login' && trip?.officeLocation?.coordinates)) && (
-            <div className="flex items-start gap-2 p-2 bg-slate-50 rounded-lg">
-              <div className="w-2 h-2 bg-red-500 rounded-full mt-1.5 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-[12px] text-slate-900 mb-0.5">{trip?.tripType === 'login' ? 'Office' : 'Dropoff'}</div>
-                <div className="text-[11px] text-slate-600 max-h-8 overflow-hidden leading-tight">
-                  {trip?.tripType === 'login' ? addresses.office : addresses.drop}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl p-3 text-[11px] text-slate-600 space-y-1">
-          <div>GPS Points: {locationHistory.length || 0}</div>
-          <div>Last Update: {stats.lastUpdate}</div>
-        </div>
-
-        <div className="space-y-2 pt-2 border-t border-slate-200">
-          <div className="flex items-center gap-2 text-[12px] font-semibold text-slate-900">
-            <Phone className="w-4 h-4 text-red-500" />Help Desk
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <button className="h-12 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 bg-white hover:bg-slate-50 flex items-center justify-center gap-2 transition-all">
-              <Phone className="w-4 h-4" />Call Driver
-            </button>
-            <button className="h-12 border border-slate-200 rounded-xl text-sm font-medium text-slate-900 bg-white hover:bg-slate-50 flex items-center justify-center gap-2 transition-all">
-              <Users className="w-4 h-4" />Call Support
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Close Button */}
-      <button 
-        onClick={onClose}
-        className="absolute top-2 right-2 z-[999] w-11 h-11 bg-white/95 border border-slate-200 rounded-xl flex items-center justify-center hover:bg-slate-50 transition-all backdrop-blur-sm shadow-lg hover:shadow-xl pointer-events-auto"
-      >
-        <ArrowLeft className="w-5 h-5 text-slate-700" />
-      </button>
     </div>
   );
 };
