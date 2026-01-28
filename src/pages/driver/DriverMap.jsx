@@ -7,26 +7,25 @@ import {
   Phone,
   AlertCircle,
   Check,
-  ArrowLeft,
   User,
   Home,
   Building2,
   Locate,
   TrendingUp,
-  ExternalLink,
-  MessageCircle,
   ChevronDown,
   ChevronUp,
-  Route,
   Info,
-  X
+  X,
+  ArrowUp,
+  TurnRight,
+  TurnLeft
 } from 'lucide-react';
 import DriverLayout from '../../components/layouts/DriverLayout';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { useLocation } from '../../context/LocationContext';
 import { useSocket } from '../../context/SocketContext';
 import { tripAPI, locationAPI, driverAPI } from '../../services/api';
-import { GoogleMap, Marker, DirectionsRenderer, Polyline, InfoWindow } from '@react-google-maps/api';
+import { GoogleMap, Marker, DirectionsRenderer, Polyline, InfoWindow, Circle } from '@react-google-maps/api';
 import toast from 'react-hot-toast';
 
 const mapContainerStyle = {
@@ -34,11 +33,16 @@ const mapContainerStyle = {
   height: '100%'
 };
 
+// Minimal map styles - clean Google Maps look
 const customMapStyles = [
   {
     featureType: 'poi',
-    elementType: 'labels',
+    elementType: 'labels.text',
     stylers: [{ visibility: 'on' }]
+  },
+  {
+    featureType: 'poi.business',
+    stylers: [{ visibility: 'simplified' }]
   },
   {
     featureType: 'transit',
@@ -47,22 +51,36 @@ const customMapStyles = [
   },
   {
     featureType: 'road',
-    elementType: 'geometry.fill',
-    stylers: [{ color: '#ffffff' }]
+    elementType: 'labels',
+    stylers: [{ visibility: 'on' }]
   },
   {
-    featureType: 'road',
-    elementType: 'geometry.stroke',
-    stylers: [{ color: '#d0d0d0' }]
+    featureType: 'administrative',
+    elementType: 'labels',
+    stylers: [{ visibility: 'on' }]
   }
 ];
 
-// Swipeable bottom sheet heights
+// Compact bottom sheet heights
 const SHEET_HEIGHTS = {
-  MIN: 160,
-  MIDDLE: 400,
-  MAX: window.innerHeight * 0.75
+  MIN: 120,
+  MIDDLE: 340,
+  MAX: window.innerHeight * 0.65
 };
+
+// Custom car icon SVG
+const CAR_ICON_SVG = `
+  <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+    <!-- Outer circle (white border) -->
+    <circle cx="24" cy="24" r="22" fill="white" stroke="#E5E7EB" stroke-width="2"/>
+    <!-- Inner circle (blue background) -->
+    <circle cx="24" cy="24" r="18" fill="#4F46E5"/>
+    <!-- Navigation arrow -->
+    <path d="M24 8 L28 18 L24 16 L20 18 Z" fill="white"/>
+    <!-- Car icon -->
+    <path d="M24 20 L26 24 L22 24 Z M22 24 L26 24 L26 28 L22 28 Z M20 26 L21 26 L21 27 L20 27 Z M27 26 L28 26 L28 27 L27 27 Z" fill="white"/>
+  </svg>
+`;
 
 const DriverMap = () => {
   const [trip, setTrip] = useState(null);
@@ -84,6 +102,8 @@ const DriverMap = () => {
   const [showRouteInfo, setShowRouteInfo] = useState(false);
   const [totalTripDistance, setTotalTripDistance] = useState(0);
   const [completedDistance, setCompletedDistance] = useState(0);
+  const [distanceToNextTurn, setDistanceToNextTurn] = useState('');
+  const [isNavigationMode, setIsNavigationMode] = useState(true);
 
   const { currentLocation, isTracking, startTracking, stopTracking } = useLocation();
   const { socket, sendLocationUpdate } = useSocket();
@@ -197,7 +217,7 @@ const DriverMap = () => {
 
   // Calculate distance between two points (Haversine formula)
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371; // Earth's radius in km
+    const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLon = ((lon2 - lon1) * Math.PI) / 180;
     const a =
@@ -208,6 +228,15 @@ const DriverMap = () => {
         Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
+  };
+
+  // Get maneuver icon
+  const getManeuverIcon = (instruction) => {
+    if (!instruction) return ArrowUp;
+    const lower = instruction.toLowerCase();
+    if (lower.includes('right')) return TurnRight;
+    if (lower.includes('left')) return TurnLeft;
+    return ArrowUp;
   };
 
   // Auto-send location updates every 5 seconds
@@ -230,30 +259,25 @@ const DriverMap = () => {
       };
 
       try {
-        // Send via socket for real-time updates
         if (socket) {
           sendLocationUpdate(trip._id, locationData.location);
         }
         
-        // Also send via HTTP API as backup
         await locationAPI.updateLocation(locationData);
         
-        // Update location history for trail effect
         setLocationHistory(prev => {
           const updated = [...prev, currentLocation];
-          return updated.slice(-50); // Keep last 50 points
+          return updated.slice(-100);
         });
 
-        // Calculate speed, bearing, and distance traveled
         if (previousLocation.current) {
           const newBearing = calculateBearing(previousLocation.current, currentLocation);
           setBearing(newBearing);
           
-          if (currentLocation.speed !== undefined) {
-            setCurrentSpeed(Math.round(currentLocation.speed * 3.6)); // Convert m/s to km/h
+          if (currentLocation.speed !== undefined && currentLocation.speed !== null) {
+            setCurrentSpeed(Math.round(currentLocation.speed * 3.6));
           }
 
-          // Calculate distance traveled
           const distanceTraveled = calculateDistance(
             previousLocation.current.lat,
             previousLocation.current.lng,
@@ -268,10 +292,7 @@ const DriverMap = () => {
       }
     };
 
-    // Send immediately
     sendLocation();
-
-    // Then send every 5 seconds
     locationUpdateInterval.current = setInterval(sendLocation, 5000);
 
     return () => {
@@ -281,7 +302,7 @@ const DriverMap = () => {
     };
   }, [currentLocation, trip, socket, sendLocationUpdate, bearing]);
 
-  // Calculate route & ETA
+  // Calculate route & ETA with navigation
   const calculateRoute = useCallback(() => {
     if (!currentLocation || routeSteps.length === 0 || !window.google) return;
 
@@ -291,7 +312,6 @@ const DriverMap = () => {
 
     const waypoints = [];
     
-    // Add remaining stops as waypoints for better route calculation
     for (let i = currentStepIndex + 1; i < Math.min(currentStepIndex + 3, routeSteps.length); i++) {
       if (routeSteps[i]?.location?.coordinates) {
         waypoints.push({
@@ -310,7 +330,8 @@ const DriverMap = () => {
       drivingOptions: {
         departureTime: new Date(),
         trafficModel: 'bestguess'
-      }
+      },
+      provideRouteAlternatives: false
     };
 
     directionsService.route(request, (result, status) => {
@@ -320,14 +341,12 @@ const DriverMap = () => {
         setDistance(leg.distance.text);
         setEta(leg.duration.text);
         
-        // Calculate total trip distance
         let totalDist = 0;
         result.routes[0].legs.forEach(l => {
-          totalDist += l.distance.value / 1000; // Convert to km
+          totalDist += l.distance.value / 1000;
         });
         setTotalTripDistance(totalDist);
         
-        // Calculate estimated arrival time
         const etaMinutes = Math.round(leg.duration.value / 60);
         const arrivalTime = new Date(Date.now() + etaMinutes * 60000);
         setEstimatedArrival(arrivalTime.toLocaleTimeString('en-US', { 
@@ -336,7 +355,6 @@ const DriverMap = () => {
           hour12: true 
         }));
 
-        // Detect traffic condition based on duration in traffic
         if (leg.duration_in_traffic) {
           const trafficRatio = leg.duration_in_traffic.value / leg.duration.value;
           if (trafficRatio > 1.5) {
@@ -348,33 +366,31 @@ const DriverMap = () => {
           }
         }
 
-        // Get next turn instruction
         if (leg.steps && leg.steps.length > 0) {
-          const nextStep = leg.steps[0];
-          setNextStopInstructions(nextStep.instructions);
+          const currentStep = leg.steps[0];
+          setNextStopInstructions(currentStep.instructions);
+          setDistanceToNextTurn(currentStep.distance.text);
         }
 
-        // Smooth camera movement
-        if (mapRef.current) {
-          const bounds = new window.google.maps.LatLngBounds();
-          bounds.extend(currentLocation);
-          bounds.extend(nextStop.location.coordinates);
-          mapRef.current.fitBounds(bounds, { top: 100, right: 50, bottom: sheetHeight + 50, left: 50 });
+        if (mapRef.current && isNavigationMode) {
+          mapRef.current.panTo({ lat: currentLocation.lat, lng: currentLocation.lng });
+          mapRef.current.setZoom(18);
+          mapRef.current.setHeading(bearing);
+          mapRef.current.setTilt(50);
         }
       } else {
         console.error('Directions request failed:', status);
       }
     });
-  }, [currentLocation, routeSteps, currentStepIndex, sheetHeight]);
+  }, [currentLocation, routeSteps, currentStepIndex, bearing, isNavigationMode]);
 
-  // Auto-recalculate route every 30 seconds
   useEffect(() => {
-    if (trip && routeSteps.length > 0) {
+    if (trip && routeSteps.length > 0 && currentLocation) {
       calculateRoute();
       
       routeRecalculationInterval.current = setInterval(() => {
         calculateRoute();
-      }, 30000); // Every 30 seconds
+      }, 10000);
 
       return () => {
         if (routeRecalculationInterval.current) {
@@ -382,7 +398,7 @@ const DriverMap = () => {
         }
       };
     }
-  }, [trip, routeSteps, calculateRoute]);
+  }, [trip, routeSteps, calculateRoute, currentLocation]);
 
   const markCurrentStepCompleted = async () => {
     if (!trip || currentStepIndex >= routeSteps.length) return;
@@ -414,10 +430,8 @@ const DriverMap = () => {
 
       if (currentStepIndex < routeSteps.length - 1) {
         setCurrentStepIndex(currentStepIndex + 1);
-        // Recalculate route for next stop
         setTimeout(() => calculateRoute(), 500);
       } else {
-        // Trip completed
         await tripAPI.complete(trip._id, { 
           actualDistance: completedDistance,
           completedAt: new Date().toISOString()
@@ -447,7 +461,6 @@ const DriverMap = () => {
     const diff = startY.current - currentY;
     let newHeight = startHeight.current + diff;
 
-    // Constrain height
     newHeight = Math.max(SHEET_HEIGHTS.MIN, Math.min(SHEET_HEIGHTS.MAX, newHeight));
     setSheetHeight(newHeight);
   };
@@ -455,10 +468,9 @@ const DriverMap = () => {
   const handleTouchEnd = () => {
     setIsDragging(false);
     
-    // Snap to nearest height
-    if (sheetHeight < SHEET_HEIGHTS.MIN + 50) {
+    if (sheetHeight < SHEET_HEIGHTS.MIN + 30) {
       setSheetHeight(SHEET_HEIGHTS.MIN);
-    } else if (sheetHeight < SHEET_HEIGHTS.MIDDLE + 100) {
+    } else if (sheetHeight < SHEET_HEIGHTS.MIDDLE + 60) {
       setSheetHeight(SHEET_HEIGHTS.MIDDLE);
     } else {
       setSheetHeight(SHEET_HEIGHTS.MAX);
@@ -471,8 +483,11 @@ const DriverMap = () => {
 
   const handleRecenter = () => {
     if (mapRef.current && currentLocation) {
+      setIsNavigationMode(true);
       mapRef.current.panTo({ lat: currentLocation.lat, lng: currentLocation.lng });
-      mapRef.current.setZoom(17);
+      mapRef.current.setZoom(18);
+      mapRef.current.setHeading(bearing);
+      mapRef.current.setTilt(50);
     }
   };
 
@@ -485,56 +500,22 @@ const DriverMap = () => {
     }
   };
 
-  const handleNavigateToLocation = (location) => {
-    if (!location?.coordinates) {
-      toast.error('Location coordinates not available');
-      return;
-    }
-
-    const { lat, lng } = location.coordinates;
-    
-    // Open in Google Maps app or browser
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const isAndroid = /Android/.test(navigator.userAgent);
-
-    let url;
-    if (isIOS) {
-      url = `maps://maps.google.com/maps?daddr=${lat},${lng}&amp;ll=`;
-    } else if (isAndroid) {
-      url = `google.navigation:q=${lat},${lng}`;
-    } else {
-      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-    }
-
-    window.open(url, '_blank');
-  };
-
   const handleEmergency = () => {
     if (socket && trip && currentLocation) {
-      const message = 'Emergency alert from driver!';
       sendLocationUpdate(trip._id, {
         coordinates: currentLocation,
         emergency: true,
         timestamp: new Date().toISOString()
       });
-      toast.error('Emergency alert sent to all!', { icon: '🚨', duration: 3000 });
+      toast.error('🚨 Emergency alert sent!', { duration: 3000 });
     }
   };
 
   const getStepIcon = (step) => {
-    if (step.type === 'pickup') return User;
-    if (step.type === 'drop') return Home;
-    if (step.type === 'office_drop' || step.type === 'office_pickup') return Building2;
-    return MapPin;
-  };
-
-  const getTrafficColor = () => {
-    switch (trafficCondition) {
-      case 'heavy': return 'text-red-600 bg-red-50';
-      case 'moderate': return 'text-amber-600 bg-amber-50';
-      case 'light': return 'text-green-600 bg-green-50';
-      default: return 'text-gray-600 bg-gray-50';
-    }
+    if (step.type === 'pickup') return '📍';
+    if (step.type === 'drop') return '🏠';
+    if (step.type === 'office_drop' || step.type === 'office_pickup') return '🏢';
+    return '📍';
   };
 
   const nextStep = routeSteps[currentStepIndex];
@@ -542,13 +523,17 @@ const DriverMap = () => {
   const progressPercentage = routeSteps.length > 0 
     ? ((routeSteps.filter(s => s.completed).length / routeSteps.length) * 100).toFixed(0)
     : 0;
+  
+  const remainingStops = routeSteps.length > 0 ? routeSteps.slice(currentStepIndex + 1).length : 0;
+
+  const ManeuverIcon = getManeuverIcon(nextStopInstructions);
 
   if (isLoading) {
     return (
       <DriverLayout>
         <div className="flex flex-col justify-center items-center h-[80vh] gap-4">
           <LoadingSpinner size="lg" />
-          <p className="text-sm text-gray-500">Loading your trip...</p>
+          <p className="text-xs text-gray-500">Loading your trip...</p>
         </div>
       </DriverLayout>
     );
@@ -556,14 +541,17 @@ const DriverMap = () => {
 
   return (
     <DriverLayout>
-      <div className="h-[calc(100vh-64px)] w-full relative bg-gray-900">
+      <div className="h-[calc(100vh-64px)] w-full relative bg-gray-50">
         {/* Map Area */}
         <div className="absolute inset-0">
           <GoogleMap
             mapContainerStyle={mapContainerStyle}
             center={center}
-            zoom={16}
+            zoom={isNavigationMode ? 18 : 15}
+            heading={isNavigationMode ? bearing : 0}
+            tilt={isNavigationMode ? 50 : 0}
             onLoad={onMapLoad}
+            onDragStart={() => setIsNavigationMode(false)}
             options={{
               disableDefaultUI: true,
               zoomControl: false,
@@ -571,17 +559,19 @@ const DriverMap = () => {
               mapTypeControl: false,
               fullscreenControl: false,
               styles: customMapStyles,
-              gestureHandling: 'greedy'
+              gestureHandling: 'greedy',
+              mapTypeId: 'roadmap'
             }}
           >
-            {/* Route polyline */}
+            {/* Route line */}
             {directionsResponse && (
               <DirectionsRenderer
                 directions={directionsResponse}
                 options={{
                   suppressMarkers: true,
+                  preserveViewport: isNavigationMode,
                   polylineOptions: {
-                    strokeColor: '#4F46E5',
+                    strokeColor: '#5B8DEF',
                     strokeWeight: 6,
                     strokeOpacity: 0.9
                   }
@@ -589,40 +579,67 @@ const DriverMap = () => {
               />
             )}
 
-            {/* Location history trail */}
+            {/* Location trail */}
             {locationHistory.length > 1 && (
               <Polyline
                 path={locationHistory}
                 options={{
                   strokeColor: '#93C5FD',
                   strokeWeight: 4,
-                  strokeOpacity: 0.7,
+                  strokeOpacity: 0.5,
                   geodesic: true
                 }}
               />
             )}
 
-            {/* Current location marker - animated car */}
+            {/* Current location - Google Maps style circular car marker */}
             {currentLocation && (
-              <Marker
-                position={currentLocation}
-                icon={{
-                  path: 'M17.402 0H5.643C2.526 0 0 3.467 0 6.584v34.804c0 3.116 2.526 5.644 5.643 5.644h11.759c3.116 0 5.644-2.527 5.644-5.644V6.584C23.044 3.467 20.518 0 17.402 0zM22.057 14.188v11.665l-2.729 2.729h-16.61l-2.729-2.729V14.188L22.057 14.188zM20.625 10.773c-1.016 3.9-2.219 8.51-2.219 8.51H4.638s-1.203-4.61-2.219-8.51C2.419 10.773 11.5 7.5 11.5 7.5S20.625 10.773 20.625 10.773z',
-                  fillColor: '#4F46E5',
-                  fillOpacity: 1,
-                  strokeColor: '#FFFFFF',
-                  strokeWeight: 2,
-                  scale: 0.8,
-                  anchor: new window.google.maps.Point(11.5, 23),
-                  rotation: bearing
-                }}
-                zIndex={1000}
-              />
+              <>
+                {/* Accuracy circle */}
+                <Circle
+                  center={currentLocation}
+                  radius={currentLocation.accuracy || 10}
+                  options={{
+                    fillColor: '#4F46E5',
+                    fillOpacity: 0.1,
+                    strokeColor: '#4F46E5',
+                    strokeOpacity: 0.3,
+                    strokeWeight: 1
+                  }}
+                />
+                
+                {/* Car marker with circular background */}
+                <Marker
+                  position={currentLocation}
+                  icon={{
+                    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                      <svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                          <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
+                            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.3"/>
+                          </filter>
+                        </defs>
+                        <circle cx="24" cy="24" r="20" fill="white" filter="url(#shadow)"/>
+                        <circle cx="24" cy="24" r="18" fill="#4F46E5"/>
+                        <g transform="rotate(${bearing} 24 24)">
+                          <path d="M24 10 L27 20 L24 18 L21 20 Z" fill="white"/>
+                        </g>
+                        <circle cx="24" cy="24" r="4" fill="white"/>
+                      </svg>
+                    `),
+                    scaledSize: new window.google.maps.Size(48, 48),
+                    anchor: new window.google.maps.Point(24, 24)
+                  }}
+                  zIndex={1000}
+                />
+              </>
             )}
 
-            {/* Route stops markers */}
+            {/* Pickup/Drop markers with custom icons */}
             {routeSteps.map((step, idx) => {
               const isActive = idx === currentStepIndex;
+              const isPast = step.completed;
+              const isPickup = step.type === 'pickup' || step.type === 'office_pickup';
               
               return (
                 <Marker
@@ -630,37 +647,44 @@ const DriverMap = () => {
                   position={step.location.coordinates}
                   onClick={() => setSelectedMarker(idx)}
                   icon={{
-                    path: window.google.maps.SymbolPath.CIRCLE,
-                    fillColor: step.completed ? '#10B981' : isActive ? '#EF4444' : '#6B7280',
-                    fillOpacity: 1,
-                    strokeColor: '#FFFFFF',
-                    strokeWeight: 3,
-                    scale: isActive ? 14 : 11
-                  }}
-                  label={{
-                    text: `${idx + 1}`,
-                    color: '#FFFFFF',
-                    fontSize: '14px',
-                    fontWeight: 'bold'
+                    url: 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(`
+                      <svg width="32" height="40" viewBox="0 0 32 40" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M16 0C7.2 0 0 7.2 0 16c0 12 16 24 16 24s16-12 16-24c0-8.8-7.2-16-16-16z" 
+                          fill="${isPast ? '#10B981' : isActive ? '#EF4444' : '#6B7280'}"/>
+                        <circle cx="16" cy="16" r="10" fill="white"/>
+                        <text x="16" y="21" font-size="14" font-weight="bold" text-anchor="middle" fill="${isPast ? '#10B981' : isActive ? '#EF4444' : '#6B7280'}">
+                          ${isPickup ? 'P' : 'D'}
+                        </text>
+                      </svg>
+                    `),
+                    scaledSize: new window.google.maps.Size(32, 40),
+                    anchor: new window.google.maps.Point(16, 40)
                   }}
                   zIndex={isActive ? 100 : idx}
                 >
                   {selectedMarker === idx && (
                     <InfoWindow onCloseClick={() => setSelectedMarker(null)}>
-                      <div className="p-2">
-                        <p className="font-semibold text-sm mb-1">
-                          {step.employee?.user?.name || step.label || 'Stop'}
-                        </p>
-                        <p className="text-xs text-gray-600 mb-2">
-                          {step.location?.address}
-                        </p>
-                        <button
-                          onClick={() => handleNavigateToLocation(step.location)}
-                          className="text-xs text-blue-600 font-medium flex items-center gap-1"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          Navigate here
-                        </button>
+                      <div className="p-2 max-w-xs">
+                        <div className="flex items-start gap-2 mb-2">
+                          <span className="text-xl">{getStepIcon(step)}</span>
+                          <div>
+                            <p className="text-sm font-bold text-gray-900 mb-1">
+                              {step.employee?.user?.name || step.label || 'Stop'}
+                            </p>
+                            <p className="text-xs text-gray-600 leading-tight">
+                              {step.location?.address}
+                            </p>
+                          </div>
+                        </div>
+                        {step.employee?.user?.phone && (
+                          <button
+                            onClick={handleCallEmployee}
+                            className="w-full text-xs py-1 px-2 bg-blue-600 text-white rounded-md flex items-center justify-center gap-1"
+                          >
+                            <Phone className="w-3 h-3" />
+                            Call
+                          </button>
+                        )}
                       </div>
                     </InfoWindow>
                   )}
@@ -670,130 +694,101 @@ const DriverMap = () => {
           </GoogleMap>
         </div>
 
-        {/* Top status bar */}
-        <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/60 to-transparent pt-3 pb-6 px-3 z-10">
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2 px-4 py-2.5 rounded-full bg-white/95 backdrop-blur shadow-lg">
-              <Navigation className="w-4 h-4 text-indigo-600" />
-              <span className="text-sm font-semibold text-gray-900 truncate max-w-[150px]">
-                {trip ? trip.tripName : 'No Active Trip'}
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {/* Speed indicator */}
-              {currentSpeed > 0 && (
-                <div className="px-3 py-2 rounded-full bg-white/95 backdrop-blur shadow-lg">
-                  <div className="flex items-center gap-1.5">
-                    <TrendingUp className="w-4 h-4 text-indigo-600" />
-                    <span className="text-sm font-bold text-gray-900">{currentSpeed}</span>
-                    <span className="text-xs text-gray-500">km/h</span>
-                  </div>
+        {/* Compact navigation banner */}
+        {trip && nextStep && isNavigationMode && nextStopInstructions && (
+          <div className="absolute top-2 left-2 right-2 z-10">
+            <div className="bg-white rounded-xl shadow-lg p-3 border border-gray-200">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
+                  <ManeuverIcon className="w-5 h-5 text-blue-600" />
                 </div>
-              )}
-
-              {/* GPS status */}
-              <div className="px-3 py-2 rounded-full bg-white/95 backdrop-blur shadow-lg">
-                <div className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${isTracking ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
-                  <span className="text-xs font-medium text-gray-900">
-                    {isTracking ? 'GPS' : 'No GPS'}
-                  </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-base font-bold text-gray-900">{distanceToNextTurn}</p>
+                  <p 
+                    className="text-xs text-gray-600 line-clamp-1"
+                    dangerouslySetInnerHTML={{ __html: nextStopInstructions }} 
+                  />
                 </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Trip progress bar */}
-          {trip && (
-            <div className="px-4 py-2 rounded-2xl bg-white/95 backdrop-blur shadow-lg">
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-medium text-gray-600">Trip Progress</span>
-                <span className="text-xs font-bold text-indigo-600">{progressPercentage}%</span>
-              </div>
-              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-gradient-to-r from-indigo-600 to-blue-600 transition-all duration-500"
-                  style={{ width: `${progressPercentage}%` }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Floating action buttons */}
-        <div className="absolute right-4 flex flex-col gap-3 z-10" style={{ bottom: `${sheetHeight + 20}px` }}>
-          <button
-            onClick={handleRecenter}
-            className="w-12 h-12 rounded-full bg-white shadow-lg flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-transform"
-            aria-label="Recenter map"
-          >
-            <Locate className="w-5 h-5 text-gray-700" />
-          </button>
-          <button
-            onClick={handleCallEmployee}
-            disabled={!nextStep?.employee}
-            className="w-12 h-12 rounded-full bg-white shadow-lg flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
-            aria-label="Call passenger"
-          >
-            <Phone className="w-5 h-5 text-gray-700" />
-          </button>
-          <button
-            onClick={() => setShowRouteInfo(!showRouteInfo)}
-            className="w-12 h-12 rounded-full bg-white shadow-lg flex items-center justify-center hover:bg-gray-50 active:scale-95 transition-transform"
-            aria-label="Route info"
-          >
-            <Info className="w-5 h-5 text-gray-700" />
-          </button>
-          <button
-            onClick={handleEmergency}
-            className="w-12 h-12 rounded-full bg-red-600 shadow-lg flex items-center justify-center hover:bg-red-700 active:scale-95 transition-transform"
-            aria-label="Emergency"
-          >
-            <AlertCircle className="w-5 h-5 text-white" />
-          </button>
-        </div>
-
-        {/* Route info panel */}
-        {showRouteInfo && trip && (
-          <div className="absolute top-32 right-4 w-64 bg-white rounded-2xl shadow-2xl p-4 z-10">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-gray-900">Route Info</h3>
-              <button onClick={() => setShowRouteInfo(false)}>
-                <X className="w-4 h-4 text-gray-400" />
-              </button>
-            </div>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Total Distance:</span>
-                <span className="font-semibold">{totalTripDistance.toFixed(2)} km</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Completed:</span>
-                <span className="font-semibold">{completedDistance.toFixed(2)} km</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Stops Remaining:</span>
-                <span className="font-semibold">{routeSteps.filter(s => !s.completed).length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Current Speed:</span>
-                <span className="font-semibold">{currentSpeed} km/h</span>
               </div>
             </div>
           </div>
         )}
 
-        {/* Swipeable Bottom Sheet */}
+        {/* Compact floating buttons */}
+        <div className="absolute right-2 flex flex-col gap-2 z-10" style={{ bottom: `${sheetHeight + 16}px` }}>
+          <button
+            onClick={handleRecenter}
+            className={`w-11 h-11 rounded-full shadow-md flex items-center justify-center transition-all ${
+              isNavigationMode ? 'bg-blue-600' : 'bg-white'
+            }`}
+          >
+            <Locate className={`w-5 h-5 ${isNavigationMode ? 'text-white' : 'text-gray-700'}`} />
+          </button>
+          <button
+            onClick={handleCallEmployee}
+            disabled={!nextStep?.employee}
+            className="w-11 h-11 rounded-full bg-white shadow-md flex items-center justify-center disabled:opacity-50"
+          >
+            <Phone className="w-5 h-5 text-gray-700" />
+          </button>
+          <button
+            onClick={() => setShowRouteInfo(!showRouteInfo)}
+            className="w-11 h-11 rounded-full bg-white shadow-md flex items-center justify-center"
+          >
+            <Info className="w-5 h-5 text-gray-700" />
+          </button>
+          <button
+            onClick={handleEmergency}
+            className="w-11 h-11 rounded-full bg-red-600 shadow-md flex items-center justify-center"
+          >
+            <AlertCircle className="w-5 h-5 text-white" />
+          </button>
+        </div>
+
+        {/* Compact route info panel */}
+        {showRouteInfo && trip && (
+          <div className="absolute top-16 right-2 w-56 bg-white rounded-xl shadow-lg p-3 z-10 text-xs">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-bold text-gray-900">Route</h3>
+              <button onClick={() => setShowRouteInfo(false)}>
+                <X className="w-4 h-4 text-gray-400" />
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex justify-between py-1 border-b border-gray-100">
+                <span className="text-gray-600">Distance:</span>
+                <span className="font-semibold">{totalTripDistance.toFixed(1)} km</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-gray-100">
+                <span className="text-gray-600">Completed:</span>
+                <span className="font-semibold text-green-600">{completedDistance.toFixed(1)} km</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-gray-100">
+                <span className="text-gray-600">Remaining:</span>
+                <span className="font-semibold text-blue-600">{remainingStops}</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-gray-100">
+                <span className="text-gray-600">Speed:</span>
+                <span className="font-semibold">{currentSpeed} km/h</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span className="text-gray-600">ETA:</span>
+                <span className="font-semibold">{estimatedArrival}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Compact bottom sheet */}
         <div 
           ref={sheetRef}
           className="absolute inset-x-0 bottom-0 z-20"
           style={{ 
             height: `${sheetHeight}px`,
-            transition: isDragging ? 'none' : 'height 0.3s ease-out'
+            transition: isDragging ? 'none' : 'height 0.2s ease-out'
           }}
         >
-          <div className="h-full mx-3 mb-3 rounded-t-3xl bg-white shadow-2xl overflow-hidden flex flex-col">
+          <div className="h-full mx-2 mb-2 rounded-t-2xl bg-white shadow-xl overflow-hidden flex flex-col">
             {/* Drag handle */}
             <div
               className="pt-2 pb-1 flex justify-center cursor-grab active:cursor-grabbing"
@@ -810,161 +805,100 @@ const DriverMap = () => {
                 }
               }}
             >
-              <div className="w-12 h-1.5 rounded-full bg-gray-300" />
+              <div className="w-10 h-1 rounded-full bg-gray-300" />
             </div>
 
             <div className="flex-1 overflow-y-auto">
               {trip && nextStep ? (
-                <div className="px-4 pb-4 space-y-4">
-                  {/* ETA banner */}
-                  <div className="flex items-center justify-between py-3 px-4 rounded-2xl bg-gradient-to-r from-indigo-50 to-blue-50 border border-indigo-100">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center">
-                        <Clock className="w-5 h-5 text-white" />
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-600">Arriving at</p>
-                        <p className="text-lg font-bold text-gray-900">{estimatedArrival || eta}</p>
-                      </div>
+                <div className="px-3 pb-3 space-y-2">
+                  {/* Compact ETA bar */}
+                  <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-blue-50 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-blue-600" />
+                      <span className="font-bold text-gray-900">{estimatedArrival || eta}</span>
                     </div>
-                    <div className="text-right">
-                      <p className="text-xs text-gray-600">Distance</p>
-                      <p className="text-base font-bold text-gray-900">{distance}</p>
+                    <div className="font-bold text-gray-900">{distance}</div>
+                    <div className="px-2 py-0.5 rounded-md text-xs font-semibold bg-white border border-gray-200">
+                      {trafficCondition}
                     </div>
                   </div>
 
-                  {/* Next stop card */}
-                  <div className="bg-white border border-gray-100 rounded-2xl p-4">
-                    <div className="flex items-start gap-3">
-                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-600 to-blue-600 flex items-center justify-center shadow-lg flex-shrink-0">
-                        <span className="text-lg font-bold text-white">
-                          {currentStepIndex + 1}
-                        </span>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs uppercase tracking-wide text-gray-500 font-medium mb-1">
-                          {nextStep.type === 'pickup' || nextStep.type === 'office_pickup' ? 'Pickup' : 'Drop-off'}
-                        </p>
-                        <p className="text-lg font-bold text-gray-900 mb-1">
-                          {nextStep.employee?.user?.name || nextStep.label || 'Office'}
-                        </p>
-                        <div className="flex items-start gap-1.5 mb-3">
-                          <MapPin className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
-                          <p className="text-sm text-gray-600 line-clamp-2">
-                            {nextStep.location?.address}
-                          </p>
-                        </div>
-                        {nextStep.employee?.user?.phone && (
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={handleCallEmployee}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-50 text-green-700 text-xs font-medium"
-                            >
-                              <Phone className="w-3.5 h-3.5" />
-                              Call
-                            </button>
-                            <button
-                              onClick={() => handleNavigateToLocation(nextStep.location)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 text-xs font-medium"
-                            >
-                              <ExternalLink className="w-3.5 h-3.5" />
-                              Navigate
-                            </button>
-                          </div>
-                        )}
-                      </div>
+                  {/* Next stop */}
+                  <div className="flex items-center gap-3 py-2 px-3 rounded-lg bg-gray-50 border border-gray-200">
+                    <div className="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0 text-sm font-bold text-white">
+                      {currentStepIndex + 1}
                     </div>
-                  </div>
-
-                  {/* Turn-by-turn instruction */}
-                  {nextStopInstructions && (
-                    <div className="px-4 py-3 rounded-2xl bg-blue-50 border border-blue-100">
-                      <div className="flex items-start gap-3">
-                        <Navigation className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
-                        <div className="flex-1">
-                          <p className="text-xs uppercase text-blue-600 font-medium mb-1">Next Turn</p>
-                          <p 
-                            className="text-sm text-gray-800 font-medium"
-                            dangerouslySetInnerHTML={{ __html: nextStopInstructions }} 
-                          />
-                        </div>
-                      </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-gray-500 mb-0.5">
+                        {nextStep.type === 'pickup' || nextStep.type === 'office_pickup' ? 'PICKUP' : 'DROP'}
+                      </p>
+                      <p className="text-sm font-bold text-gray-900 truncate">
+                        {nextStep.employee?.user?.name || nextStep.label}
+                      </p>
+                      <p className="text-xs text-gray-600 truncate">{nextStep.location?.address}</p>
                     </div>
-                  )}
-
-                  {/* Traffic condition */}
-                  <div className={`flex items-center justify-between py-2 px-4 rounded-xl ${getTrafficColor()}`}>
-                    <span className="text-xs font-medium">Traffic condition</span>
-                    <span className="text-xs font-bold">
-                      {trafficCondition.charAt(0).toUpperCase() + trafficCondition.slice(1)}
-                    </span>
+                    {nextStep.employee?.user?.phone && (
+                      <button
+                        onClick={handleCallEmployee}
+                        className="p-2 rounded-lg bg-green-50 text-green-700"
+                      >
+                        <Phone className="w-4 h-4" />
+                      </button>
+                    )}
                   </div>
 
                   {/* Action button */}
                   <button
                     onClick={markCurrentStepCompleted}
-                    className="w-full flex items-center justify-center gap-3 py-4 rounded-2xl bg-gradient-to-r from-green-600 to-emerald-600 text-white font-bold text-base shadow-lg hover:from-green-700 hover:to-emerald-700 active:scale-98 transition-all"
+                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-green-600 text-white text-sm font-bold shadow-md"
                   >
-                    <Check className="w-5 h-5" />
-                    <span>
-                      {nextStep.type === 'pickup' || nextStep.type === 'office_pickup' 
-                        ? 'Confirm Pickup' 
-                        : 'Confirm Drop-off'}
-                    </span>
+                    <Check className="w-4 h-4" />
+                    {nextStep.type === 'pickup' || nextStep.type === 'office_pickup' ? 'Confirm Pickup' : 'Confirm Drop'}
                   </button>
 
                   {/* Upcoming stops */}
-                  {sheetHeight >= SHEET_HEIGHTS.MIDDLE && routeSteps.length > 1 && (
-                    <div className="pt-4 border-t border-gray-100">
-                      <p className="text-xs uppercase tracking-wide text-gray-500 font-medium mb-3 flex items-center justify-between">
-                        <span>Upcoming Stops ({routeSteps.length - currentStepIndex - 1})</span>
+                  {sheetHeight >= SHEET_HEIGHTS.MIDDLE && remainingStops > 0 && (
+                    <div className="pt-2 border-t border-gray-200">
+                      <p className="text-xs font-semibold text-gray-500 mb-2 flex items-center justify-between">
+                        <span>Upcoming ({remainingStops})</span>
                         <button
                           onClick={() => setSheetHeight(sheetHeight === SHEET_HEIGHTS.MAX ? SHEET_HEIGHTS.MIDDLE : SHEET_HEIGHTS.MAX)}
-                          className="text-indigo-600"
+                          className="text-blue-600"
                         >
                           {sheetHeight === SHEET_HEIGHTS.MAX ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
                         </button>
                       </p>
-                      <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                        {routeSteps.slice(currentStepIndex + 1).map((step, idx) => {
-                          const StepIcon = getStepIcon(step);
-                          return (
-                            <div
-                              key={idx}
-                              className="flex items-center gap-3 py-2 px-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
-                              onClick={() => handleNavigateToLocation(step.location)}
-                            >
-                              <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                                <StepIcon className="w-4 h-4 text-gray-600" />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-medium text-gray-900 truncate">
-                                  {step.employee?.user?.name || step.label || 'Stop'}
-                                </p>
-                                <p className="text-xs text-gray-500 truncate">
-                                  {step.location?.address}
-                                </p>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-gray-400">#{currentStepIndex + idx + 2}</span>
-                                <ExternalLink className="w-3.5 h-3.5 text-gray-400" />
-                              </div>
+                      <div className="space-y-2 max-h-48 overflow-y-auto">
+                        {routeSteps.slice(currentStepIndex + 1).map((step, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-center gap-2 py-2 px-2 rounded-lg bg-gray-50 text-xs"
+                          >
+                            <span className="text-base">{getStepIcon(step)}</span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-semibold text-gray-900 truncate">
+                                {step.employee?.user?.name || step.label}
+                              </p>
+                              <p className="text-xs text-gray-600 truncate">
+                                {step.location?.address}
+                              </p>
                             </div>
-                          );
-                        })}
+                            <span className="text-xs font-semibold text-gray-400">
+                              #{currentStepIndex + idx + 2}
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="p-8 text-center">
-                  <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gray-100 flex items-center justify-center">
-                    <Navigation className="w-8 h-8 text-gray-400" />
+                <div className="p-6 text-center">
+                  <div className="w-14 h-14 mx-auto mb-3 rounded-full bg-gray-100 flex items-center justify-center">
+                    <Navigation className="w-7 h-7 text-gray-400" />
                   </div>
-                  <p className="text-lg font-bold text-gray-900 mb-1">No active trip</p>
-                  <p className="text-sm text-gray-500">
-                    Waiting for your next assignment
-                  </p>
+                  <p className="text-sm font-bold text-gray-900 mb-1">No active trip</p>
+                  <p className="text-xs text-gray-500">Waiting for assignment</p>
                 </div>
               )}
             </div>

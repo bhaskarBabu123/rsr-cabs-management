@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { useAuth } from './AuthContext';
+// src/context/LocationContext.jsx
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import toast from 'react-hot-toast';
 
-const LocationContext = createContext();
+const LocationContext = createContext(null);
 
 export const useLocation = () => {
   const context = useContext(LocationContext);
@@ -13,57 +14,105 @@ export const useLocation = () => {
 
 export const LocationProvider = ({ children }) => {
   const [currentLocation, setCurrentLocation] = useState(null);
-  const [watchId, setWatchId] = useState(null);
   const [isTracking, setIsTracking] = useState(false);
   const [locationError, setLocationError] = useState(null);
-  const { user } = useAuth();
+  const [accuracy, setAccuracy] = useState(null);
+  const [altitude, setAltitude] = useState(null);
+  const [speed, setSpeed] = useState(null);
+  const [heading, setHeading] = useState(null);
+  
+  const watchIdRef = useRef(null);
+  const locationHistoryRef = useRef([]);
 
-  const startTracking = () => {
+  const startTracking = useCallback(() => {
     if (!navigator.geolocation) {
-      setLocationError('Geolocation is not supported by this browser');
+      const error = 'Geolocation is not supported by your browser';
+      setLocationError(error);
+      toast.error(error);
       return;
     }
 
     const options = {
       enableHighAccuracy: true,
       timeout: 10000,
-      maximumAge: 60000
+      maximumAge: 0
     };
 
-    const id = navigator.geolocation.watchPosition(
-      (position) => {
-        const location = {
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          speed: position.coords.speed,
-          heading: position.coords.heading,
-          timestamp: new Date(position.timestamp)
-        };
-        
-        setCurrentLocation(location);
-        setLocationError(null);
-      },
-      (error) => {
-        setLocationError(error.message);
-        console.error('Location error:', error);
-      },
+    const handleSuccess = (position) => {
+      const locationData = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+        altitude: position.coords.altitude,
+        altitudeAccuracy: position.coords.altitudeAccuracy,
+        heading: position.coords.heading,
+        speed: position.coords.speed,
+        timestamp: position.timestamp
+      };
+
+      setCurrentLocation(locationData);
+      setAccuracy(position.coords.accuracy);
+      setAltitude(position.coords.altitude);
+      setSpeed(position.coords.speed);
+      setHeading(position.coords.heading);
+      setLocationError(null);
+      setIsTracking(true);
+
+      // Store in history
+      locationHistoryRef.current.push(locationData);
+      if (locationHistoryRef.current.length > 100) {
+        locationHistoryRef.current.shift();
+      }
+    };
+
+    const handleError = (error) => {
+      let errorMessage = '';
+      switch (error.code) {
+        case error.PERMISSION_DENIED:
+          errorMessage = 'Location permission denied. Please enable location access.';
+          break;
+        case error.POSITION_UNAVAILABLE:
+          errorMessage = 'Location information unavailable.';
+          break;
+        case error.TIMEOUT:
+          errorMessage = 'Location request timed out.';
+          break;
+        default:
+          errorMessage = 'An unknown error occurred while getting location.';
+      }
+      setLocationError(errorMessage);
+      setIsTracking(false);
+      console.error('Location error:', errorMessage);
+    };
+
+    // Start watching position
+    watchIdRef.current = navigator.geolocation.watchPosition(
+      handleSuccess,
+      handleError,
       options
     );
 
-    setWatchId(id);
-    setIsTracking(true);
-  };
+    // Get initial position immediately
+    navigator.geolocation.getCurrentPosition(handleSuccess, handleError, options);
+  }, []);
 
-  const stopTracking = () => {
-    if (watchId) {
-      navigator.geolocation.clearWatch(watchId);
-      setWatchId(null);
-      setIsTracking(false);
+  const stopTracking = useCallback(() => {
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
     }
-  };
+    setIsTracking(false);
+  }, []);
 
-  const getCurrentPosition = () => {
+  const getLocationHistory = useCallback(() => {
+    return locationHistoryRef.current;
+  }, []);
+
+  const clearLocationHistory = useCallback(() => {
+    locationHistoryRef.current = [];
+  }, []);
+
+  const getCurrentPosition = useCallback(() => {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
         reject(new Error('Geolocation is not supported'));
@@ -75,7 +124,9 @@ export const LocationProvider = ({ children }) => {
           const location = {
             lat: position.coords.latitude,
             lng: position.coords.longitude,
-            accuracy: position.coords.accuracy
+            accuracy: position.coords.accuracy,
+            speed: position.coords.speed,
+            heading: position.coords.heading
           };
           resolve(location);
         },
@@ -85,29 +136,33 @@ export const LocationProvider = ({ children }) => {
         {
           enableHighAccuracy: true,
           timeout: 10000,
-          maximumAge: 60000
+          maximumAge: 0
         }
       );
     });
-  };
+  }, []);
 
-  // Auto-start tracking for drivers
+  // Cleanup on unmount
   useEffect(() => {
-    if (user?.role === 'driver') {
-      startTracking();
-    }
-
     return () => {
-      stopTracking();
+      if (watchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+      }
     };
-  }, [user]);
+  }, []);
 
   const value = {
     currentLocation,
     isTracking,
     locationError,
+    accuracy,
+    altitude,
+    speed,
+    heading,
     startTracking,
     stopTracking,
+    getLocationHistory,
+    clearLocationHistory,
     getCurrentPosition
   };
 
@@ -117,3 +172,5 @@ export const LocationProvider = ({ children }) => {
     </LocationContext.Provider>
   );
 };
+
+export default LocationContext;
