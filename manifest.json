@@ -1,7 +1,7 @@
 {
   "background_color": "#ffffff",
   "dir": "ltr",
-  "display": "standalone",
+  "display": "fullscreen",
   "name": "cabs.rsrtravel",
   "orientation": "any",
   "scope": "/",
@@ -10,7 +10,7 @@
   "theme_color": "#ffffff",
   "icons": [
     {
-      "src": "https://www.rsr-tours.com/static/media/logoRSR.520d3b5c1fbc05c845d5.jpg",
+      "src": "https://www.rsrtravel.com/static/media/logoRSR.520d3b5c1fbc05c845d5.jpg",
       "type": "image/x-icon",
       "isSquare": false,
       "isPng": false,
@@ -34,5 +34,14 @@
       "is192x192": false
     }
   ],
-  "id": "com.rsrtravel.cabs"
+  "id": "com.rsrtravel.cabs",
+  "lang": "en",
+  "display_override": [
+    "fullscreen",
+    "window-controls-overlay"
+  ],
+  "categories": [
+    "transportation",
+    "travel"
+  ]
 }
